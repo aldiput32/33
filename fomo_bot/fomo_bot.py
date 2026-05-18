@@ -311,6 +311,8 @@ def run_purchase(pembeli, pembeli_num, total, event_url):
             if not r or r.status_code not in (200, 301, 302, 303):
                 safe_print(f"{prefix} WA submit GAGAL"); continue
             cur_url, html = r.url, r.text
+            with open("debug.html", "w", encoding="utf-8") as f: f.write(html)
+            safe_print(f"{prefix} DEBUG saved debug.html | url={cur_url[:80]}")
         else:
             safe_print("SKIP")
 
