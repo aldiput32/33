@@ -72,12 +72,12 @@ def create_session():
 
 def load_data_pembeli():
     """Load dari data_pembeli.txt
-    Format: NAMA|NIK|EMAIL|NO_WA|QTY|LOKASI|PG_METHOD|WAR_TIME
+    Format: NAMA|NIK|EMAIL|NO_WA|QTY|LOKASI
     """
     if not os.path.exists(DATA_FILE):
         safe_print(f"\n  [ERROR] File tidak ditemukan: {DATA_FILE}")
-        safe_print(f"  Format: NAMA|NIK|EMAIL|NO_WA|QTY|LOKASI|PG_METHOD|WAR_TIME")
-        safe_print(f"  Contoh: BUDI|330123|budi@mail.com|08123|1|1|711|13:00:00")
+        safe_print(f"  Format: NAMA|NIK|EMAIL|NO_WA|QTY|LOKASI")
+        safe_print(f"  Contoh: BUDI|330123|budi@mail.com|08123|1|1")
         sys.exit(1)
 
     data = []
@@ -87,8 +87,8 @@ def load_data_pembeli():
             if not line or line.startswith("#"):
                 continue
             parts = line.split("|")
-            if len(parts) < 5:
-                safe_print(f"  [WARNING] Baris {line_num} kurang field (min 5): {line[:80]}")
+            if len(parts) < 4:
+                safe_print(f"  [WARNING] Baris {line_num} kurang field (min 4): {line[:80]}")
                 continue
 
             qty = 1
@@ -96,8 +96,6 @@ def load_data_pembeli():
                 qty = max(1, min(3, int(parts[4].strip())))
 
             lokasi = int(parts[5].strip()) if len(parts) > 5 and parts[5].strip().isdigit() else 1
-            pg_method = parts[6].strip() if len(parts) > 6 and parts[6].strip() else "711"
-            war_time = parts[7].strip() if len(parts) > 7 else ""
 
             data.append({
                 "nama": parts[0].strip(),
@@ -106,8 +104,6 @@ def load_data_pembeli():
                 "wa": parts[3].strip(),
                 "qty": qty,
                 "lokasi": lokasi,
-                "pg_method": pg_method,
-                "war_time": war_time,
             })
 
     if not data:
@@ -409,9 +405,9 @@ def main():
 
     print(f"\n  Loaded: {len(all_pembeli)} pembeli")
     for i, p in enumerate(all_pembeli, 1):
-        print(f"    {i}. {p['nama']} | qty={p['qty']} | lok={p['lokasi']} | {p['pg_method']} | war={p['war_time'] or 'NOW'}")
+        print(f"    {i}. {p['nama']} | qty={p['qty']} | lok={p['lokasi']}")
 
-    # INPUT DI CLI (cuma 3 pertanyaan)
+    # INPUT DI CLI (3 pertanyaan)
     print(f"\n  Paste link event:")
     event_url = input("  > ").strip()
     if not event_url:
@@ -421,30 +417,20 @@ def main():
         event_url = f"{SITE_BASE}/{event_url}"
 
     print(f"\n  Metode pembayaran (711=QRIS) [default: 711]:")
-    pg_input = input("  > ").strip()
-    if pg_input:
-        # Override pg_method untuk semua pembeli
-        for p in all_pembeli:
-            p["pg_method"] = pg_input
+    pg_method = input("  > ").strip() or "711"
 
     print(f"\n  Jam war WIB (HH:MM:SS) [kosong = langsung gas]:")
-    war_input = input("  > ").strip()
-    if war_input:
-        # Override war_time untuk semua pembeli
-        for p in all_pembeli:
-            p["war_time"] = war_input
+    war_time_str = input("  > ").strip()
+
+    # Set pg_method ke semua pembeli
+    for p in all_pembeli:
+        p["pg_method"] = pg_method
 
     print(f"\n  Event   : {event_url}")
-    print(f"  Payment : {all_pembeli[0]['pg_method']}")
-    print(f"  War     : {all_pembeli[0]['war_time'] or 'LANGSUNG GAS'}")
+    print(f"  Payment : {pg_method}")
+    print(f"  War     : {war_time_str or 'LANGSUNG GAS'}")
 
-    # Countdown ke war_time (ambil dari pembeli pertama, atau yg paling awal)
-    war_time_str = ""
-    for p in all_pembeli:
-        if p["war_time"]:
-            war_time_str = p["war_time"]
-            break
-
+    # Countdown
     war_target = None
     if war_time_str:
         try:

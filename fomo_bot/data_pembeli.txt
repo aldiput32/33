@@ -1,14 +1,12 @@
-# Data Pembeli - Format: NAMA|NIK|EMAIL|NO_WA|QTY|LOKASI|PG_METHOD|WAR_TIME
+# Data Pembeli - Format: NAMA|NIK|EMAIL|NO_WA|QTY|LOKASI
 #
-# QTY        = jumlah tiket per orang (1-3)
-# LOKASI     = nomor paket tiket (lihat di halaman event)
-# PG_METHOD  = metode pembayaran (711=QRIS)
-# WAR_TIME   = jam war WIB (HH:MM:SS), kosong = langsung gas
+# QTY    = jumlah tiket per orang (1-3)
+# LOKASI = nomor paket tiket (lihat di halaman event)
 #
-# EVENT_URL ditanya sekali di terminal saat run
+# EVENT_URL, PG_METHOD, WAR_TIME ditanya di terminal saat run
 # Baris yang dimulai # atau kosong akan di-skip
 # MODE otomatis PARALEL untuk semua akun
 #
 # Contoh:
-BUDI SANTOSO|3301234567890001|integralflorance@wshu.net|081234567890|1|1|711|
-# SITI RAHAYU|3302345678900002|siti@email.com|082345678901|2|1|711|13:00:00
+BUDI SANTOSO|3301234567890001|integralflorance@wshu.net|081234567890|1|1
+# SITI RAHAYU|3302345678900002|siti@email.com|082345678901|2|1
