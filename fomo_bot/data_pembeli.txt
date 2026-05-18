@@ -1,0 +1,7 @@
+# Data Pembeli - Format: NAMA|NIK|EMAIL|NO_WA|QTY
+# QTY = jumlah tiket per orang (1-3)
+# Baris yang dimulai # atau kosong akan di-skip
+#
+# Contoh:
+BUDI SANTOSO|3301234567890001|integralflorance@wshu.net|081234567890|1
+# SITI RAHAYU|3302345678900002|siti@email.com|082345678901|2
