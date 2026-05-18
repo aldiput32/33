@@ -51,8 +51,14 @@ class SafelinkBypass:
     # Common URL parameter names that contain the real destination
     URL_PARAMS = [
         "url", "link", "target", "dest", "destination", "redirect",
-        "goto", "out", "u", "q", "r", "ref", "next", "continue",
+        "goto", "out", "u", "t", "r", "ref", "next", "continue",
         "return", "returnTo", "redirect_uri", "redirect_url",
+    ]
+
+    # Queue/waiting room domains — extract target URL from params
+    QUEUE_DOMAINS = [
+        "queue.tiket.com", "queue-it.net", "queue.website",
+        "waitingroom.", "queue.", "antrian.",
     ]
 
     # Known safelink patterns (regex)
@@ -96,6 +102,15 @@ class SafelinkBypass:
         """
         result = BypassResult(original_url=url)
         result.chain.append(url)
+
+        # Method 0: Detect queue/waiting room systems (priority — always has target param)
+        extracted = self._try_queue_system(url)
+        if extracted:
+            result.final_url = extracted
+            result.method = "queue_bypass"
+            result.success = True
+            result.chain.append(extracted)
+            return result
 
         # Method 1: Try extracting from URL parameters (no HTTP needed)
         extracted = self._try_url_params(url)
@@ -141,6 +156,13 @@ class SafelinkBypass:
                 result.success = True
                 return result
 
+        # Method 6: If URL is a direct link (no safelink detected), return as-is
+        if self._is_direct_link(url):
+            result.final_url = url
+            result.method = "direct_link"
+            result.success = True
+            return result
+
         if not result.success:
             result.error = "Could not extract destination URL"
 
@@ -180,6 +202,58 @@ class SafelinkBypass:
 
     # --- Private Methods ---
 
+    def _try_queue_system(self, url: str) -> Optional[str]:
+        """Detect queue/waiting room systems and extract the target URL."""
+        try:
+            parsed = urllib.parse.urlparse(url)
+            hostname = parsed.hostname or ""
+
+            # Check if this is a known queue domain
+            is_queue = any(
+                q in hostname for q in self.QUEUE_DOMAINS
+            )
+
+            if is_queue:
+                params = urllib.parse.parse_qs(parsed.query)
+                # Queue systems commonly use 't', 'target', 'url' for destination
+                queue_params = ["t", "target", "url", "redirect", "destination", 
+                                "returnUrl", "return_url", "next"]
+                for param_name in queue_params:
+                    if param_name in params:
+                        value = params[param_name][0]
+                        decoded = urllib.parse.unquote(value)
+                        if self._is_valid_url(decoded):
+                            return decoded
+                        if self._is_valid_url(value):
+                            return value
+        except Exception:
+            pass
+        return None
+
+    def _is_direct_link(self, url: str) -> bool:
+        """
+        Check if URL is a direct/normal link (not a safelink/shortener).
+        These should be returned as-is instead of failing.
+        """
+        try:
+            parsed = urllib.parse.urlparse(url)
+            hostname = parsed.hostname or ""
+
+            # Has a meaningful path (not just /)
+            has_path = len(parsed.path.strip("/")) > 0
+
+            # Not a known shortener
+            is_shortener = any(
+                hostname.endswith(s) for s in self.SHORTENER_DOMAINS
+            )
+
+            # Not a queue system
+            is_queue = any(q in hostname for q in self.QUEUE_DOMAINS)
+
+            return has_path and not is_shortener and not is_queue
+        except Exception:
+            return False
+
     def _try_url_params(self, url: str) -> Optional[str]:
         """Extract real URL from query parameters."""
         try:
@@ -189,6 +263,9 @@ class SafelinkBypass:
             for param_name in self.URL_PARAMS:
                 if param_name in params:
                     value = params[param_name][0]
+                    # Skip if value is too short to be a URL
+                    if len(value) < 10:
+                        continue
                     # Try Base64 decode first
                     decoded = self._decode_base64(value)
                     if decoded and self._is_valid_url(decoded):
