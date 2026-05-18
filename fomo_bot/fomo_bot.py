@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
 Bot Tiket ExploreFomo
-- SEMUA config di data_pembeli.txt (termasuk event_url, lokasi, payment, war_time)
-- TANPA pertanyaan apapun di terminal
-- Langsung: python fomo_bot.py
+- Event URL ditanya 1x di awal (CLI)
+- Sisanya semua dari data_pembeli.txt (nama, nik, email, wa, qty, lokasi, pg, war_time)
 - Paralel otomatis
 - Retry tanpa jeda
 - Ctrl+C langsung ringkasan
 
 Format data_pembeli.txt:
-    NAMA|NIK|EMAIL|NO_WA|QTY|EVENT_URL|LOKASI|PG_METHOD|WAR_TIME
+    NAMA|NIK|EMAIL|NO_WA|QTY|LOKASI|PG_METHOD|WAR_TIME
 
 Cara pakai:
-    1. Edit data_pembeli.txt
-    2. python fomo_bot.py   <-- langsung jalan, 0 pertanyaan
+    1. Edit data_pembeli.txt (data pembeli + keyword tiket)
+    2. python fomo_bot.py
+    3. Paste event URL -> Enter -> langsung gas
 """
 
 import os
@@ -72,12 +72,12 @@ def create_session():
 
 def load_data_pembeli():
     """Load dari data_pembeli.txt
-    Format: NAMA|NIK|EMAIL|NO_WA|QTY|EVENT_URL|LOKASI|PG_METHOD|WAR_TIME
+    Format: NAMA|NIK|EMAIL|NO_WA|QTY|LOKASI|PG_METHOD|WAR_TIME
     """
     if not os.path.exists(DATA_FILE):
         safe_print(f"\n  [ERROR] File tidak ditemukan: {DATA_FILE}")
-        safe_print(f"  Format: NAMA|NIK|EMAIL|NO_WA|QTY|EVENT_URL|LOKASI|PG_METHOD|WAR_TIME")
-        safe_print(f"  Contoh: BUDI|330123|budi@mail.com|08123|1|https://sites.explorefomo.id/Event|1|711|13:00:00")
+        safe_print(f"  Format: NAMA|NIK|EMAIL|NO_WA|QTY|LOKASI|PG_METHOD|WAR_TIME")
+        safe_print(f"  Contoh: BUDI|330123|budi@mail.com|08123|1|1|711|13:00:00")
         sys.exit(1)
 
     data = []
@@ -87,21 +87,17 @@ def load_data_pembeli():
             if not line or line.startswith("#"):
                 continue
             parts = line.split("|")
-            if len(parts) < 6:
-                safe_print(f"  [WARNING] Baris {line_num} kurang field (min 6): {line[:80]}")
+            if len(parts) < 5:
+                safe_print(f"  [WARNING] Baris {line_num} kurang field (min 5): {line[:80]}")
                 continue
 
             qty = 1
             if len(parts) >= 5 and parts[4].strip().isdigit():
                 qty = max(1, min(3, int(parts[4].strip())))
 
-            event_url = parts[5].strip() if len(parts) > 5 else ""
-            if not event_url.startswith("http"):
-                event_url = f"{SITE_BASE}/{event_url}" if event_url else ""
-
-            lokasi = int(parts[6].strip()) if len(parts) > 6 and parts[6].strip().isdigit() else 1
-            pg_method = parts[7].strip() if len(parts) > 7 and parts[7].strip() else "711"
-            war_time = parts[8].strip() if len(parts) > 8 else ""
+            lokasi = int(parts[5].strip()) if len(parts) > 5 and parts[5].strip().isdigit() else 1
+            pg_method = parts[6].strip() if len(parts) > 6 and parts[6].strip() else "711"
+            war_time = parts[7].strip() if len(parts) > 7 else ""
 
             data.append({
                 "nama": parts[0].strip(),
@@ -109,7 +105,6 @@ def load_data_pembeli():
                 "email": parts[2].strip(),
                 "wa": parts[3].strip(),
                 "qty": qty,
-                "event_url": event_url,
                 "lokasi": lokasi,
                 "pg_method": pg_method,
                 "war_time": war_time,
@@ -249,10 +244,9 @@ def print_summary():
 # PURCHASE FLOW
 # =============================================================================
 
-def run_purchase(pembeli, pembeli_num, total):
+def run_purchase(pembeli, pembeli_num, total, event_url):
     """Beli tiket 1 pembeli. Retry sampai dapat atau di-stop."""
     prefix = f"  [{pembeli_num}/{total}]"
-    event_url = pembeli["event_url"]
     lokasi = pembeli["lokasi"]
     qty = pembeli["qty"]
     pg_method = pembeli["pg_method"]
@@ -407,7 +401,7 @@ def run_purchase(pembeli, pembeli_num, total):
 def main():
     print("\n" + "=" * 60)
     print("  BOT TIKET EXPLOREFOMO")
-    print("  0 pertanyaan - semua dari data_pembeli.txt")
+    print("  Event URL di CLI, sisanya dari data_pembeli.txt")
     print("  Ctrl+C = stop + ringkasan")
     print("=" * 60)
 
@@ -415,7 +409,17 @@ def main():
 
     print(f"\n  Loaded: {len(all_pembeli)} pembeli")
     for i, p in enumerate(all_pembeli, 1):
-        print(f"    {i}. {p['nama']} | qty={p['qty']} | {p['event_url'][:50]} | {p['pg_method']} | war={p['war_time'] or 'NOW'}")
+        print(f"    {i}. {p['nama']} | qty={p['qty']} | lok={p['lokasi']} | {p['pg_method']} | war={p['war_time'] or 'NOW'}")
+
+    # SATU-SATUNYA PERTANYAAN: Event URL
+    print(f"\n  Paste link event:")
+    event_url = input("  > ").strip()
+    if not event_url:
+        print("  [!] Event URL kosong, exit.")
+        return
+    if not event_url.startswith("http"):
+        event_url = f"{SITE_BASE}/{event_url}"
+    print(f"  Event: {event_url}")
 
     # Countdown ke war_time (ambil dari pembeli pertama, atau yg paling awal)
     war_time_str = ""
@@ -472,14 +476,13 @@ def main():
         if total > 1:
             executor = ThreadPoolExecutor(max_workers=total)
             for i, p in enumerate(all_pembeli, 1):
-                f = executor.submit(run_purchase, p, i, total)
+                f = executor.submit(run_purchase, p, i, total, event_url)
                 f.add_done_callback(lambda fut, pp=p: on_done(fut, pp))
             for f in as_completed([]):
                 pass
-            # Wait for all
             executor.shutdown(wait=True)
         else:
-            r = run_purchase(all_pembeli[0], 1, 1)
+            r = run_purchase(all_pembeli[0], 1, 1, event_url)
             with results_lock: results.append(r)
 
     except KeyboardInterrupt:
