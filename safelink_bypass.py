@@ -472,7 +472,7 @@ class QueueWaiter:
     then automatically opens the target URL.
     """
 
-    def __init__(self, queue_url: str, interval: int = 5, timeout_minutes: int = 60,
+    def __init__(self, queue_url: str, interval: float = 0.1, timeout_minutes: int = 60,
                  open_browser: bool = True, user_agent: Optional[str] = None):
         self.queue_url = queue_url
         self.interval = interval
@@ -821,8 +821,8 @@ Examples:
     # Queue waiting room options
     parser.add_argument("--queue-wait", "-qw", metavar="URL",
                         help="Monitor a queue/waiting room URL until it passes")
-    parser.add_argument("--queue-interval", "-qi", type=int, default=5,
-                        help="Queue poll interval in seconds (default: 5)")
+    parser.add_argument("--queue-interval", "-qi", type=float, default=0.1,
+                        help="Queue poll interval in seconds (default: 0.1)")
     parser.add_argument("--queue-timeout", "-qt", type=int, default=60,
                         help="Queue timeout in minutes (default: 60)")
     parser.add_argument("--no-browser", action="store_true",
@@ -868,38 +868,48 @@ Examples:
             print(f"\n[-] Failed   : {result.original_url}")
             print(f"[-] Error    : {result.error}")
 
-    # Interactive mode
-    if args.interactive:
+    # Interactive mode (DEFAULT if no args)
+    if args.interactive or (not args.url and not args.batch and not args.queue_wait):
         print("=" * 60)
         print("  Safelink Bypass Bot - Interactive Mode")
-        print("  Type a URL and press Enter. Type 'quit' to exit.")
-        print("  Prefix with 'wait:' to monitor a queue URL.")
+        print("  Paste any URL and press Enter.")
+        print("  Queue URLs auto-detected & monitored until passed.")
+        print("  Type 'quit' to exit.")
         print("=" * 60)
         while True:
             try:
-                url = input("\n> Enter URL: ").strip()
+                url = input("\n> URL: ").strip()
                 if url.lower() in ("quit", "exit", "q"):
                     print("Bye!")
                     break
-                if url.lower().startswith("wait:"):
-                    queue_url = url[5:].strip()
-                    if queue_url and HAS_REQUESTS:
-                        waiter = QueueWaiter(
-                            queue_url=queue_url,
-                            interval=args.queue_interval if hasattr(args, 'queue_interval') else 5,
-                            timeout_minutes=args.queue_timeout if hasattr(args, 'queue_timeout') else 60,
-                            open_browser=not args.no_browser if hasattr(args, 'no_browser') else True,
-                        )
-                        waiter.wait()
-                    elif not HAS_REQUESTS:
-                        print("[-] 'requests' library required for queue monitoring")
-                    else:
-                        print("[-] Usage: wait:<queue_url>")
-                elif url:
+                if not url:
+                    continue
+
+                # Auto-detect queue URLs and start monitoring
+                parsed_input = urllib.parse.urlparse(url)
+                hostname = parsed_input.hostname or ""
+                is_queue_url = any(q in hostname for q in SafelinkBypass.QUEUE_DOMAINS)
+
+                if is_queue_url and HAS_REQUESTS:
+                    print(f"\n[*] Queue URL detected! Starting monitor...")
+                    waiter = QueueWaiter(
+                        queue_url=url,
+                        interval=args.queue_interval,
+                        timeout_minutes=args.queue_timeout,
+                        open_browser=not args.no_browser,
+                    )
+                    waiter.wait()
+                else:
                     process_url(url)
+
             except (KeyboardInterrupt, EOFError):
                 print("\nBye!")
                 break
+        return
+
+    # Single URL mode
+    if args.url:
+        process_url(args.url)
         return
 
     # Batch mode
@@ -914,12 +924,6 @@ Examples:
             print(f"[-] File not found: {args.batch}")
             sys.exit(1)
         return
-
-    # Single URL mode
-    if args.url:
-        process_url(args.url)
-    else:
-        parser.print_help()
 
 
 if __name__ == "__main__":
