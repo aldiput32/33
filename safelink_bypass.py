@@ -7,19 +7,24 @@ Supports:
 - Common shorteners (bit.ly, tinyurl, s.id, etc.)
 - Safelink redirectors (any domain with ?url=, ?link=, ?target= params)
 - JavaScript-based redirectors (meta refresh, window.location, etc.)
+- Queue/waiting room monitor (queue-it, tiket.com queue, etc.)
 - Custom patterns (easily extensible)
 
 Usage:
     python safelink_bypass.py <URL>
     python safelink_bypass.py --batch urls.txt
     python safelink_bypass.py --interactive
+    python safelink_bypass.py --queue-wait <QUEUE_URL>
 """
 
 import re
 import sys
+import time
 import base64
 import argparse
 import urllib.parse
+import webbrowser
+from datetime import datetime, timedelta
 from typing import Optional, List
 from dataclasses import dataclass, field
 
@@ -460,6 +465,338 @@ class SafelinkBypass:
             return False
 
 
+class QueueWaiter:
+    """
+    Queue/Waiting Room monitor.
+    Polls the queue page and waits until the queue passes,
+    then automatically opens the target URL.
+    """
+
+    def __init__(self, queue_url: str, interval: int = 5, timeout_minutes: int = 60,
+                 open_browser: bool = True, user_agent: Optional[str] = None):
+        self.queue_url = queue_url
+        self.interval = interval
+        self.timeout_minutes = timeout_minutes
+        self.open_browser = open_browser
+        self.user_agent = user_agent or (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+
+        # Extract target URL from queue params
+        self.bypass = SafelinkBypass(user_agent=self.user_agent)
+        self.target_url = self.bypass._try_queue_system(queue_url)
+        if not self.target_url:
+            # Fallback: try generic param extraction
+            self.target_url = self.bypass._try_url_params(queue_url)
+
+        # Extract event info from queue URL
+        parsed = urllib.parse.urlparse(queue_url)
+        params = urllib.parse.parse_qs(parsed.query)
+        self.event_name = params.get("l", params.get("e", ["Unknown Event"]))[0]
+        self.customer = params.get("c", ["unknown"])[0]
+
+        # Session for maintaining cookies
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        })
+
+        # Stats
+        self.start_time = None
+        self.poll_count = 0
+        self.last_status = None
+
+    def wait(self) -> bool:
+        """
+        Main loop: poll the queue until it passes or timeout.
+        Returns True if queue passed, False if timed out.
+        """
+        if not HAS_REQUESTS:
+            print("[-] Error: 'requests' library required. Install with: pip install requests")
+            return False
+
+        self.start_time = datetime.now()
+        deadline = self.start_time + timedelta(minutes=self.timeout_minutes)
+
+        print("=" * 64)
+        print("  QUEUE WAITING ROOM MONITOR")
+        print("=" * 64)
+        print(f"  Event    : {self.event_name}")
+        print(f"  Customer : {self.customer}")
+        print(f"  Target   : {self.target_url or 'detecting...'}")
+        print(f"  Interval : {self.interval}s")
+        print(f"  Timeout  : {self.timeout_minutes} min")
+        print(f"  Started  : {self.start_time.strftime('%H:%M:%S')}")
+        print("=" * 64)
+        print()
+        print("[*] Monitoring queue status... (Ctrl+C to stop)")
+        print()
+
+        # First: hit the queue URL to establish session/cookies
+        try:
+            resp = self.session.get(self.queue_url, allow_redirects=False, timeout=15)
+            self._print_status(resp, initial=True)
+        except Exception as e:
+            print(f"[!] Initial request failed: {e}")
+            print("[*] Will keep retrying...")
+
+        # Main polling loop
+        while datetime.now() < deadline:
+            try:
+                time.sleep(self.interval)
+                self.poll_count += 1
+
+                # Strategy 1: Check queue page — see if it redirects to target
+                passed = self._check_queue_page()
+                if passed:
+                    return self._on_queue_passed()
+
+                # Strategy 2: Directly check if target URL is accessible 
+                # (not redirecting back to queue)
+                if self.target_url:
+                    target_ok = self._check_target_accessible()
+                    if target_ok:
+                        return self._on_queue_passed()
+
+            except KeyboardInterrupt:
+                elapsed = datetime.now() - self.start_time
+                print(f"\n[!] Stopped by user after {self._format_duration(elapsed)}")
+                print(f"[*] Total polls: {self.poll_count}")
+                return False
+            except Exception as e:
+                print(f"  [{self._timestamp()}] Error: {e} (retrying...)")
+
+        # Timeout
+        elapsed = datetime.now() - self.start_time
+        print(f"\n[-] Timeout after {self._format_duration(elapsed)}")
+        print(f"[-] Queue did not pass within {self.timeout_minutes} minutes")
+        print(f"[*] Total polls: {self.poll_count}")
+        return False
+
+    def _check_queue_page(self) -> bool:
+        """
+        Poll the queue URL and check if:
+        1. It redirects to target (302/301 to non-queue URL)
+        2. The HTML no longer shows a waiting room
+        3. It returns a token/cookie that allows target access
+        """
+        try:
+            resp = self.session.get(
+                self.queue_url,
+                allow_redirects=False,
+                timeout=15
+            )
+
+            # Check for redirect to target
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("Location", "")
+                if location:
+                    # Resolve relative URLs
+                    if not location.startswith("http"):
+                        location = urllib.parse.urljoin(self.queue_url, location)
+
+                    # Skip error pages and same-domain queue redirects
+                    if "/error" in location or "er=" in location:
+                        self._print_poll(f"Queue error page (token expired?)")
+                        return False
+
+                    if not self._is_queue_url(location):
+                        # Verify it's actually the target or a non-queue page
+                        if self.target_url and self.target_url in location:
+                            print(f"\n  [{self._timestamp()}] REDIRECT to target -> {location}")
+                            return True
+                        elif not self._is_queue_url(location):
+                            print(f"\n  [{self._timestamp()}] REDIRECT detected -> {location}")
+                            if not self.target_url:
+                                self.target_url = location
+                            return True
+
+            # Check if response is the actual target page (200 with non-queue content)
+            if resp.status_code == 200:
+                content = resp.text.lower()
+
+                # Signs that queue has passed
+                queue_passed_indicators = [
+                    "queue" not in content and "waiting" not in content and "antri" not in content,
+                    "your turn" in content,
+                    "you have been redirected" in content,
+                    "redirecting you" in content,
+                ]
+
+                # Signs still in queue
+                still_in_queue_indicators = [
+                    "waiting room" in content,
+                    "in queue" in content,
+                    "your estimated" in content,
+                    "people ahead" in content,
+                    "queue-it" in content,
+                    "antrian" in content,
+                    "mohon tunggu" in content,
+                    "please wait" in content,
+                    "you are now in line" in content,
+                ]
+
+                # Extract queue position if available
+                position = self._extract_queue_position(resp.text)
+
+                if any(still_in_queue_indicators):
+                    status = f"Still in queue"
+                    if position:
+                        status += f" | Position: {position}"
+                    self._print_poll(status)
+                    return False
+
+                if any(queue_passed_indicators):
+                    print(f"\n  [{self._timestamp()}] Queue page content changed!")
+                    return True
+
+                # Default: still waiting
+                self._print_poll("Waiting...")
+                return False
+
+            # Non-200 status
+            self._print_poll(f"HTTP {resp.status_code}")
+            return False
+
+        except requests.exceptions.Timeout:
+            self._print_poll("Timeout (server busy)")
+            return False
+        except Exception as e:
+            self._print_poll(f"Error: {str(e)[:50]}")
+            return False
+
+    def _check_target_accessible(self) -> bool:
+        """
+        Check if the target URL is directly accessible without 
+        being redirected back to a queue page.
+        """
+        try:
+            resp = self.session.get(
+                self.target_url,
+                allow_redirects=False,
+                timeout=10
+            )
+
+            # If target returns 200, queue has passed
+            if resp.status_code == 200:
+                content = resp.text.lower()
+                # Make sure it's not a queue page disguised as 200
+                if "queue" not in content and "waiting room" not in content:
+                    return True
+
+            # If redirect back to queue, still waiting
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("Location", "")
+                if self._is_queue_url(location):
+                    return False
+                # Redirect to non-queue URL = passed
+                return True
+
+            return False
+        except Exception:
+            return False
+
+    def _is_queue_url(self, url: str) -> bool:
+        """Check if URL is a queue/waiting room URL."""
+        try:
+            parsed = urllib.parse.urlparse(url)
+            hostname = parsed.hostname or ""
+            return any(q in hostname for q in SafelinkBypass.QUEUE_DOMAINS)
+        except Exception:
+            return False
+
+    def _extract_queue_position(self, html: str) -> Optional[str]:
+        """Try to extract queue position from HTML."""
+        patterns = [
+            r'(?:position|posisi|nomor)[\s:]*(\d[\d,\.]*)',
+            r'(\d[\d,\.]*)\s*(?:people|orang|users?)\s*(?:ahead|di depan)',
+            r'(?:ahead of you|di depan anda)[\s:]*(\d[\d,\.]*)',
+            r'"queuePosition"[\s:]*(\d+)',
+            r'"usersInLineAheadOfYou"[\s:]*(\d+)',
+            r'data-queue-position="(\d+)"',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+
+    def _on_queue_passed(self) -> bool:
+        """Called when queue has passed."""
+        elapsed = datetime.now() - self.start_time
+
+        print()
+        print("=" * 64)
+        print("  ✓ QUEUE PASSED!")
+        print("=" * 64)
+        print(f"  Target URL : {self.target_url}")
+        print(f"  Wait time  : {self._format_duration(elapsed)}")
+        print(f"  Polls      : {self.poll_count}")
+        print(f"  Passed at  : {datetime.now().strftime('%H:%M:%S')}")
+        print("=" * 64)
+
+        # Open in browser
+        if self.open_browser and self.target_url:
+            print(f"\n[+] Opening target URL in browser...")
+            try:
+                webbrowser.open(self.target_url)
+            except Exception:
+                print(f"[!] Could not open browser. URL: {self.target_url}")
+
+        # Export cookies for manual use
+        self._export_session_info()
+
+        return True
+
+    def _export_session_info(self):
+        """Export session cookies so user can use them in browser."""
+        cookies = self.session.cookies.get_dict()
+        if cookies:
+            print(f"\n[+] Session cookies (use in browser if needed):")
+            for name, value in cookies.items():
+                print(f"    {name}={value[:50]}{'...' if len(value) > 50 else ''}")
+
+    def _print_status(self, resp, initial=False):
+        """Print initial connection status."""
+        prefix = "Initial" if initial else "Status"
+        print(f"  [{self._timestamp()}] {prefix}: HTTP {resp.status_code}")
+        if resp.cookies:
+            print(f"  [{self._timestamp()}] Cookies received: {len(resp.cookies)}")
+
+    def _print_poll(self, status: str):
+        """Print poll status on same line (overwrite)."""
+        elapsed = datetime.now() - self.start_time
+        elapsed_str = self._format_duration(elapsed)
+        line = f"  [{self._timestamp()}] Poll #{self.poll_count:>4} | {elapsed_str} | {status}"
+        # Use carriage return to overwrite previous line
+        sys.stdout.write(f"\r{line:<80}")
+        sys.stdout.flush()
+
+    def _timestamp(self) -> str:
+        """Get current timestamp string."""
+        return datetime.now().strftime("%H:%M:%S")
+
+    def _format_duration(self, td: timedelta) -> str:
+        """Format timedelta as human readable."""
+        total_seconds = int(td.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        if hours > 0:
+            return f"{hours}h {minutes}m {seconds}s"
+        elif minutes > 0:
+            return f"{minutes}m {seconds}s"
+        else:
+            return f"{seconds}s"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Safelink Bypass Bot - Extract real URLs from any safelink/shortener",
@@ -470,6 +807,7 @@ Examples:
   python safelink_bypass.py --batch urls.txt
   python safelink_bypass.py --interactive
   python safelink_bypass.py --recursive "https://bit.ly/xyz"
+  python safelink_bypass.py --queue-wait "https://queue.tiket.com/?c=tiket&e=event&t=https://target.com"
         """
     )
     parser.add_argument("url", nargs="?", help="URL to bypass")
@@ -480,7 +818,34 @@ Examples:
     parser.add_argument("--timeout", "-t", type=int, default=10, help="HTTP timeout (seconds)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show redirect chain")
 
+    # Queue waiting room options
+    parser.add_argument("--queue-wait", "-qw", metavar="URL",
+                        help="Monitor a queue/waiting room URL until it passes")
+    parser.add_argument("--queue-interval", "-qi", type=int, default=5,
+                        help="Queue poll interval in seconds (default: 5)")
+    parser.add_argument("--queue-timeout", "-qt", type=int, default=60,
+                        help="Queue timeout in minutes (default: 60)")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="Don't auto-open browser when queue passes")
+
     args = parser.parse_args()
+
+    # Queue wait mode
+    if args.queue_wait:
+        if not HAS_REQUESTS:
+            print("[-] Error: 'requests' library required.")
+            print("    Install with: pip install requests beautifulsoup4")
+            sys.exit(1)
+
+        waiter = QueueWaiter(
+            queue_url=args.queue_wait,
+            interval=args.queue_interval,
+            timeout_minutes=args.queue_timeout,
+            open_browser=not args.no_browser,
+        )
+        success = waiter.wait()
+        sys.exit(0 if success else 1)
+
     bot = SafelinkBypass(timeout=args.timeout)
 
     def process_url(url: str):
@@ -508,6 +873,7 @@ Examples:
         print("=" * 60)
         print("  Safelink Bypass Bot - Interactive Mode")
         print("  Type a URL and press Enter. Type 'quit' to exit.")
+        print("  Prefix with 'wait:' to monitor a queue URL.")
         print("=" * 60)
         while True:
             try:
@@ -515,7 +881,21 @@ Examples:
                 if url.lower() in ("quit", "exit", "q"):
                     print("Bye!")
                     break
-                if url:
+                if url.lower().startswith("wait:"):
+                    queue_url = url[5:].strip()
+                    if queue_url and HAS_REQUESTS:
+                        waiter = QueueWaiter(
+                            queue_url=queue_url,
+                            interval=args.queue_interval if hasattr(args, 'queue_interval') else 5,
+                            timeout_minutes=args.queue_timeout if hasattr(args, 'queue_timeout') else 60,
+                            open_browser=not args.no_browser if hasattr(args, 'no_browser') else True,
+                        )
+                        waiter.wait()
+                    elif not HAS_REQUESTS:
+                        print("[-] 'requests' library required for queue monitoring")
+                    else:
+                        print("[-] Usage: wait:<queue_url>")
+                elif url:
                     process_url(url)
             except (KeyboardInterrupt, EOFError):
                 print("\nBye!")
