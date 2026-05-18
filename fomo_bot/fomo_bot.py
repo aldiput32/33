@@ -411,7 +411,7 @@ def main():
     for i, p in enumerate(all_pembeli, 1):
         print(f"    {i}. {p['nama']} | qty={p['qty']} | lok={p['lokasi']} | {p['pg_method']} | war={p['war_time'] or 'NOW'}")
 
-    # SATU-SATUNYA PERTANYAAN: Event URL
+    # INPUT DI CLI (cuma 3 pertanyaan)
     print(f"\n  Paste link event:")
     event_url = input("  > ").strip()
     if not event_url:
@@ -419,7 +419,24 @@ def main():
         return
     if not event_url.startswith("http"):
         event_url = f"{SITE_BASE}/{event_url}"
-    print(f"  Event: {event_url}")
+
+    print(f"\n  Metode pembayaran (711=QRIS) [default: 711]:")
+    pg_input = input("  > ").strip()
+    if pg_input:
+        # Override pg_method untuk semua pembeli
+        for p in all_pembeli:
+            p["pg_method"] = pg_input
+
+    print(f"\n  Jam war WIB (HH:MM:SS) [kosong = langsung gas]:")
+    war_input = input("  > ").strip()
+    if war_input:
+        # Override war_time untuk semua pembeli
+        for p in all_pembeli:
+            p["war_time"] = war_input
+
+    print(f"\n  Event   : {event_url}")
+    print(f"  Payment : {all_pembeli[0]['pg_method']}")
+    print(f"  War     : {all_pembeli[0]['war_time'] or 'LANGSUNG GAS'}")
 
     # Countdown ke war_time (ambil dari pembeli pertama, atau yg paling awal)
     war_time_str = ""
