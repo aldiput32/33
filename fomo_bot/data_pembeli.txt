@@ -5,7 +5,14 @@
 #
 # EVENT_URL, PG_METHOD, WAR_TIME ditanya di terminal saat run
 # Baris yang dimulai # atau kosong akan di-skip
-# MODE otomatis PARALEL untuk semua akun
+#
+# PG_METHOD options (ditanya saat run):
+#   711 = QRIS
+#   802 = VA BCA
+#   800 = VA Mandiri
+#
+# PILIHAN AKUN: saat run, bisa pilih akun mana yang dijalankan
+# MODE otomatis PARALEL (Playwright headless browser)
 #
 # Contoh:
 BUDI SANTOSO|3301234567890001|integralflorance@wshu.net|081234567890|1|1
